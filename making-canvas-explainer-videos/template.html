@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>示例：一次 HTTP 请求的旅程 · 科普动画</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  /* 预览按 canvas 固有宽高比等比缩放；导出分辨率 = canvas 的 width/height 属性（与下面 W/H 一致），改画幅只改这两处 */
+  canvas { display: block; max-width: 100vw; max-height: 100vh; width: auto; height: auto; cursor: pointer; }
+  body.capture canvas { max-width: none; max-height: none; cursor: default; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="1280" height="720"></canvas>
+<script>
+/*
+ * Canvas 科普动画模板（单文件、零依赖、无外部素材）
+ * ───────────────────────────────────────────────
+ * 只需修改【本集内容】区块：TITLE / INTRO / SEG / NARRATION / scene(t)
+ * 其余（背景、工具函数、音乐合成、语音、播放、导出接口）保持不动。
+ *
+ * 接口约定（make-video.js / check.js 依赖）：
+ *   ?capture=1               → 不自动播放，供逐帧导出
+ *   window.renderFrame(n)    → 纯函数，只由帧号决定画面（禁止 Math.random / Date.now）
+ *   window.VIDEO_META        → { fps, width, height, scale, duration, frames, narrationLead, narration:[{start,text}], segs:[{s,e,cap}] }
+ *   window.musicWavBase64()  → 背景音乐 WAV（base64），与画面等长
+ */
+(() => {
+  'use strict';
+
+  // ===== 基本参数 =====
+  const W = 1280, H = 720, FPS = 30, DURATION = 12;   // DURATION：动画时间轴长度（秒），SEG/NARRATION 都用这个时间轴
+  const SCALE = 2.0;                                   // 时间拉伸系数：给语音解说留时间（真实时长 = DURATION × SCALE）
+  const LEAD = 0.3;                                    // 每句解说比它的画面阶段晚 0.3s 起读（check.js 会用它反推对齐关系）
+  const REAL = DURATION * SCALE;                       // 实际视频时长（秒）
+  const TOTAL_FRAMES = Math.round(FPS * REAL);
+  const TAU = Math.PI * 2;
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const C = {
+    user: '#4cc9f0', agent: '#a78bfa', think: '#ffd166', tool: '#ff9f1c', obs: '#2ee59d', answer: '#5eead4', err: '#ff5c7a',
+    gray: '#8aa0c8', slot: '#5a6a9a', text: '#dbe7ff', dim: 'rgba(170, 190, 230, 0.62)'
+  };
+  const MONO = '"JetBrains Mono", Consolas, "Courier New", monospace';
+  const SANS = '"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif';
+
+  // ===== 通用工具 =====
+  let seed = 20261010;                                 // 固定种子：保证逐帧导出可复现
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const stars = Array.from({ length: 90 }, () => ({ x: rnd() * W, y: rnd() * H, r: rnd() * 1.3 + 0.2, a: rnd() * 0.5 + 0.15, p: rnd() * TAU }));
+  const clamp01 = x => Math.max(0, Math.min(1, x));
+  const prog = (t, a, b) => clamp01((t - a) / (b - a));                                   // t 在 [a,b] 内的进度 0..1
+  const ease = x => { x = clamp01(x); return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+  const vis = (t, a, b, f = 0.4) => Math.min(prog(t, a, a + f), 1 - prog(t, b - f, b));  // [a,b] 内可见，首尾淡入淡出
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; };
+  // 取「起点不晚于 t 的最后一个 SEG」：SEG 有空档或超过 DURATION 时不会突然跳到末段（check.js 会直接报错）
+  const segAt = t => SEG.reduce((hit, s) => (t >= s.s && s.s > hit.s ? s : hit), SEG[0]);
+
+  function withA(a, fn) { if (a <= 0) return; ctx.save(); ctx.globalAlpha *= Math.min(1, a); fn(); ctx.restore(); }
+  function text(str, x, y, color, font, align, baseline) {
+    ctx.save(); ctx.fillStyle = color; ctx.font = font;
+    ctx.textAlign = align || 'left'; ctx.textBaseline = baseline || 'alphabetic';
+    ctx.fillText(str, x, y); ctx.restore();
+  }
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r); ctx.closePath();
+  }
+  function dot(x, y, r, color, glow, alpha) {
+    ctx.save(); ctx.globalAlpha *= (alpha === undefined ? 1 : Math.max(0, alpha));
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = glow || 0;
+    ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, r), 0, TAU); ctx.fill(); ctx.restore();
+  }
+  function wrap(str, maxW, font) {
+    ctx.save(); ctx.font = font;
+    const lines = []; let cur = '';
+    for (const ch of str) { if (ctx.measureText(cur + ch).width > maxW && cur) { lines.push(cur); cur = ch; } else cur += ch; }
+    if (cur) lines.push(cur);
+    ctx.restore(); return lines;
+  }
+  function typed(str, p, t) {                          // 打字机效果
+    const chars = Array.from(str), n = Math.floor(chars.length * clamp01(p));
+    const cursor = p > 0 && p < 1 && Math.floor(t * 4) % 2 === 0 ? '▌' : '';
+    return chars.slice(0, n).join('') + cursor;
+  }
+  function box(x, y, w, h, color, alpha, o = {}) {     // 圆角发光卡片：o = { fill, dash, glow, lw, r, stroke }，fill:'none' 不填充
+    if (alpha <= 0) return;
+    ctx.save(); ctx.globalAlpha *= Math.min(1, alpha);
+    rr(x, y, w, h, o.r || 12);
+    if (o.fill !== 'none') { ctx.fillStyle = o.fill || 'rgba(12, 20, 44, 0.9)'; ctx.fill(); }
+    if (o.dash) ctx.setLineDash(o.dash);
+    ctx.strokeStyle = o.stroke || rgba(color, 0.8); ctx.lineWidth = o.lw || 1.5;
+    ctx.shadowColor = color; ctx.shadowBlur = o.glow === undefined ? 10 : o.glow;
+    ctx.stroke(); ctx.restore();
+  }
+  function arrow(x1, y1, x2, y2, color, alpha, o = {}) {   // o = { lw, dash, offset }（offset 随 t 变化即为流动虚线）
+    if (alpha <= 0) return;
+    ctx.save(); ctx.globalAlpha *= Math.min(1, alpha);
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = o.lw || 2;
+    if (o.dash) { ctx.setLineDash(o.dash); ctx.lineDashOffset = o.offset || 0; }
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+    const a = Math.atan2(y2 - y1, x2 - x1), s = 10;
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - s * Math.cos(a - 0.4), y2 - s * Math.sin(a - 0.4));
+    ctx.lineTo(x2 - s * Math.cos(a + 0.4), y2 - s * Math.sin(a + 0.4));
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  function cross(x, y, s, color, alpha) {
+    withA(alpha, () => {
+      ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
+    });
+  }
+  function packet(x1, y1, x2, y2, p, color, label) {   // 沿直线飞行的发光数据包（带拖尾和标签）
+    if (p <= 0 || p >= 1) return;
+    const e = ease(p), x = lerp(x1, x2, e), y = lerp(y1, y2, e);
+    for (let i = 6; i >= 1; i--) dot(lerp(x1, x2, Math.max(0, e - i * 0.025)), lerp(y1, y2, Math.max(0, e - i * 0.025)), 6 - i * 0.6, color, 0, 0.5 - i * 0.06);
+    dot(x, y, 8, color, 22); dot(x, y, 2.5, '#ffffff');
+    if (label) withA(Math.min(1, p * 6, (1 - p) * 6), () => text(label, x, y - 24, color, `bold 14px ${MONO}`, 'center', 'middle'));
+  }
+  function panel(x, y, w, rows) {                      // 右上角实时数值面板：rows = [[标签, 值, 颜色], ...]
+    box(x, y, w, 24 + rows.length * 34, C.agent, 1, { fill: 'rgba(12, 22, 48, 0.8)', glow: 0 });
+    rows.forEach(([k, v, col], i) => {
+      const ry = y + 29 + i * 34;
+      dot(x + 22, ry, 5, col, 8);
+      text(k, x + 38, ry, C.text, `16px ${SANS}`, 'left', 'middle');
+      text(v, x + w - 20, ry, col, `bold 18px ${MONO}`, 'right', 'middle');
+    });
+  }
+  function background(t) {
+    const g = ctx.createRadialGradient(W * 0.45, H * 0.5, 50, W * 0.5, H * 0.5, W * 0.8);
+    g.addColorStop(0, '#0e1533'); g.addColorStop(0.55, '#080d1d'); g.addColorStop(1, '#03050b');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.strokeStyle = 'rgba(80, 140, 255, 0.07)'; ctx.lineWidth = 1;
+    for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke(); }
+    for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke(); }
+    ctx.restore();
+    for (const s of stars) dot(s.x, s.y, s.r, '#a0c8ff', 0, s.a * (0.6 + 0.4 * Math.sin(t * 2 + s.p)));
+  }
+  function header(t, seg) {
+    text(TITLE, 40, 60, C.text, `bold 30px ${SANS}`);
+    if (seg.cap) withA(prog(t, seg.s, seg.s + 0.4), () => text(seg.cap, 40, 98, seg.c, `bold 19px ${SANS}`));
+  }
+  function intro(t) {                                  // 片头：0 ~ 2.6s
+    const a = Math.min(prog(t, 0.1, 0.8), 1 - prog(t, 2.0, 2.6));
+    withA(a, () => {
+      const lift = (1 - ease(prog(t, 0.1, 1.0))) * 20;
+      ctx.save(); ctx.strokeStyle = INTRO.color; ctx.lineWidth = 4; ctx.shadowColor = INTRO.color; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(W / 2, 250 + lift, 52, 0, TAU); ctx.stroke(); ctx.restore();
+      text(INTRO.num, W / 2, 252 + lift, INTRO.color, `bold 52px ${MONO}`, 'center', 'middle');
+      text(INTRO.title, W / 2, 370 + lift, '#ffffff', `bold 46px ${SANS}`, 'center', 'middle');
+      withA(prog(t, 0.6, 1.3), () => text(INTRO.sub, W / 2, 435, C.dim, `20px ${SANS}`, 'center', 'middle'));
+    });
+  }
+  function progress(frame, t) {                        // 底部分段进度条
+    const x = 40, y = 690, w = W - 80;
+    for (const s of SEG) {
+      const sx = x + w * s.s / DURATION, sw = w * (s.e - s.s) / DURATION - 2;
+      ctx.fillStyle = rgba(s.c, 0.18); ctx.fillRect(sx, y, sw, 5);
+      const f = clamp01((t - s.s) / (s.e - s.s));
+      if (f > 0) { ctx.fillStyle = s.c; ctx.fillRect(sx, y, sw * f, 5); }
+    }
+    text(`t = ${(frame / FPS).toFixed(2)}s / ${REAL.toFixed(2)}s`, x, y - 10, C.dim, `13px ${MONO}`);
+    text(`frame ${frame + 1}/${TOTAL_FRAMES} · ${FPS}fps`, x + w, y - 10, C.dim, `13px ${MONO}`, 'right');
+  }
+
+  // ===== 本集内容（复用时只改这里）=====
+  const TITLE = '一次 HTTP 请求的旅程';
+  const INTRO = { num: '?', title: '浏览器 → 服务器', sub: '点开一个网页时，背后发生了什么？', color: C.user };
+  // 时间轴分段：s/e 为动画时间轴秒数；c 为配色；cap 为顶部字幕（片头段留空）
+  // 必须首尾相接覆盖 0 ~ DURATION；每句 NARRATION 的起点要落在它描述的那段里（check.js 会逐条校验）
+  const SEG = [
+    { s: 0,   e: 2.6, c: C.gray,  cap: '' },
+    { s: 2.6, e: 5.5, c: C.user,  cap: '① 浏览器发出请求：GET /index.html' },
+    { s: 5.5, e: 8.5, c: C.tool,  cap: '② 服务器处理请求，查询数据' },
+    { s: 8.5, e: 12,  c: C.obs,   cap: '③ 返回响应：200 OK + 网页内容' }
+  ];
+  // 解说词：[动画时间轴起点(秒), 文本]；每句须在下一句开始前读完（中文约 4.6 字/秒 × SCALE 后的窗口）
+  const NARRATION = [
+    [0,   '你点开一个网页时，背后发生了什么？'],
+    [2.6, '首先，浏览器向服务器发出一个 GET 请求。'],
+    [5.5, '服务器收到请求，处理逻辑，并查询数据库。'],
+    [8.5, '最后返回状态码两百和网页内容，浏览器把它渲染出来。']
+  ];
+
+  function scene(t) {
+    const B = { x: 120, y: 300, w: 240, h: 120 }, S = { x: 920, y: 300, w: 240, h: 120 };
+    box(B.x, B.y, B.w, B.h, C.user, 1, { glow: 6 + 20 * vis(t, 2.6, 5.6) });
+    text('浏览器', B.x + B.w / 2, B.y + 50, C.user, `bold 24px ${SANS}`, 'center', 'middle');
+    text('Browser', B.x + B.w / 2, B.y + 84, C.dim, `15px ${MONO}`, 'center', 'middle');
+    box(S.x, S.y, S.w, S.h, C.tool, 1, { glow: 6 + 20 * vis(t, 5.5, 8.6) });
+    text('服务器', S.x + S.w / 2, S.y + 50, C.tool, `bold 24px ${SANS}`, 'center', 'middle');
+    text('Server', S.x + S.w / 2, S.y + 84, C.dim, `15px ${MONO}`, 'center', 'middle');
+    arrow(B.x + B.w + 10, 345, S.x - 10, 345, C.user, 0.35, { dash: [6, 6], offset: -t * 30 });
+    arrow(S.x - 10, 380, B.x + B.w + 10, 380, C.obs, 0.35, { dash: [6, 6], offset: -t * 30 });
+    packet(B.x + B.w + 10, 345, S.x - 10, 345, prog(t, 3.0, 5.2), C.user, 'GET /index.html');
+    packet(S.x - 10, 380, B.x + B.w + 10, 380, prog(t, 8.8, 11.0), C.obs, '200 OK · <html>…');
+    withA(vis(t, 5.5, 8.8), () => {                    // 服务器处理中：数据库查询
+      box(S.x + 30, 470, 180, 56, C.tool, 1, { fill: 'rgba(40, 24, 6, 0.8)' });
+      text(typed('SELECT * FROM pages', prog(t, 5.8, 7.4), t), S.x + 120, 498, '#ffe2b8', `14px ${MONO}`, 'center', 'middle');
+      arrow(S.x + 120, 424, S.x + 120, 466, C.tool, 1);
+    });
+    const loaded = prog(t, 11.0, 11.6);                // 浏览器渲染完成
+    withA(loaded, () => text('✓ 页面已显示', B.x + B.w / 2, B.y + B.h + 34, C.obs, `bold 18px ${SANS}`, 'center', 'middle'));
+    const status = t >= 11 ? '200 OK' : t >= 5.2 ? '处理中…' : t >= 3 ? '发送中…' : '—';
+    panel(930, 26, 320, [
+      ['当前阶段', segAt(t).cap ? segAt(t).cap.slice(0, 1) : '开场', segAt(t).c],
+      ['请求状态', status, t >= 11 ? C.obs : C.think],
+      ['耗时', `${Math.max(0, Math.round((Math.min(t, 11) - 3) * 40))} ms`, C.user]   // 数值每帧实时计算
+    ]);
+  }
+
+  // ===== 渲染某一帧（纯函数：输出只取决于帧号）=====
+  function renderFrame(frame) {
+    frame = Math.max(0, Math.min(TOTAL_FRAMES - 1, frame | 0));
+    const t = frame / FPS / SCALE, seg = segAt(t);              // t：动画时间轴（秒）
+    ctx.clearRect(0, 0, W, H);
+    background(t);
+    withA(prog(t, 2.2, 2.9), () => { header(t, seg); scene(t, seg); });
+    intro(t);
+    progress(frame, t);
+  }
+
+  // ===== 背景音乐：纯代码合成（确定性，无任何音频素材）=====
+  // Am - F - C - G 和弦进行，84 BPM：柔和 Pad + 低音拨弦 + 钟琴琶音 + 回声
+  function synthMusic(sr, seconds) {
+    const n = Math.ceil(sr * seconds), out = new Float32Array(n);
+    const beat = 60 / 84, bar = beat * 4, eighth = beat / 2;
+    const CH = [[57, 60, 64], [57, 60, 65], [55, 60, 64], [55, 59, 62]], BASS = [45, 41, 48, 43];
+    const ARP = [0, 1, 2, 3, 2, 1, 0, 1];
+    const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+    const s = (f, t) => Math.sin(TAU * f * t);
+    const pad = (ch, t) => ch.reduce((a, m) => { const f = hz(m); return a + s(f, t) + 0.6 * s(f * 1.004, t) + 0.25 * s(f * 2, t); }, 0);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, b = Math.floor(t / bar), tb = t - b * bar, ci = b % 4;
+      let v = 0.022 * pad(CH[ci], t) * Math.min(1, tb / 0.5);                          // Pad 淡入
+      if (b > 0 && tb < 0.5) v += 0.022 * pad(CH[(b - 1) % 4], t) * (1 - tb / 0.5);      // 上一和弦淡出（无爆音交叉）
+      for (const k of [0, 2]) {                                                         // 低音：第 1、3 拍
+        const dt = tb - k * beat;
+        if (dt >= 0) { const f = hz(BASS[ci]); v += 0.11 * Math.exp(-dt * 3) * Math.min(1, dt / 0.01) * (s(f, t) + 0.2 * s(2 * f, t)); }
+      }
+      if (t > bar) {                                                                    // 第 2 小节起加入琶音
+        const e = Math.floor(tb / eighth);
+        for (const back of [0, 1]) {
+          const idx = e - back; if (idx < 0) continue;
+          const dt = tb - idx * eighth, ch = CH[ci], p = ARP[idx % 8];
+          const f = hz((p === 3 ? ch[0] + 12 : ch[p]) + 12);
+          v += 0.04 * Math.exp(-dt * 5) * Math.min(1, dt / 0.005) * (s(f, t) + 0.15 * s(3 * f, t));
+        }
+      }
+      out[i] = v;
+    }
+    const d = Math.round(beat * 0.75 * sr);                                             // 回声
+    for (let i = d; i < n; i++) out[i] += 0.28 * out[i - d];
+    let y = 0, peak = 1e-6;                                                             // 一阶低通 + 求峰值
+    for (let i = 0; i < n; i++) { y += 0.35 * (out[i] - y); out[i] = y; peak = Math.max(peak, Math.abs(y)); }
+    for (let i = 0; i < n; i++) {                                                       // 归一化 + 首尾淡入淡出
+      const t = i / sr;
+      out[i] = out[i] / peak * 0.85 * Math.min(1, t / 2.5) * Math.min(1, (seconds - t) / 3);
+    }
+    return out;
+  }
+  function musicWavBase64(sr = 44100) {
+    const data = synthMusic(sr, REAL), n = data.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, data[i])) * 32767, true);
+    const bytes = new Uint8Array(buf); let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  // ===== 解说：按 SCALE 换算到真实时间 =====
+  const narration = () => NARRATION.map(([s, txt]) => ({ start: +(s * SCALE + LEAD).toFixed(2), text: txt }));
+
+  // ===== 实时播放（音频时钟驱动，保证音画同步；浏览器要求用户点击后才能发声）=====
+  let audio = null, rafId = null, timers = [], startAt = 0, lastFrame = -1;
+  function pickVoice() {
+    const vs = speechSynthesis.getVoices().filter(v => /zh[-_]CN/i.test(v.lang));
+    return vs.find(v => /Xiaoxiao/i.test(v.name)) || vs.find(v => /Natural|Online/i.test(v.name)) || vs[0] || null;
+  }
+  function say(txt) {
+    const u = new SpeechSynthesisUtterance(txt), v = pickVoice();
+    u.lang = 'zh-CN'; u.rate = 1.05; if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  }
+  function stop() {
+    if (rafId) cancelAnimationFrame(rafId); rafId = null;
+    timers.forEach(clearTimeout); timers = [];
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (audio && audio.src) { try { audio.src.stop(); } catch (e) { /* 已停止 */ } audio.src = null; }
+  }
+  function tick() {
+    const elapsed = audio.ctx.currentTime - startAt;
+    const f = Math.min(TOTAL_FRAMES - 1, Math.floor(elapsed * FPS));
+    if (f !== lastFrame) { renderFrame(f); lastFrame = f; }
+    rafId = elapsed < REAL ? requestAnimationFrame(tick) : null;
+  }
+  function play() {
+    stop();
+    if (!audio) {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const data = synthMusic(ac.sampleRate, REAL), buffer = ac.createBuffer(1, data.length, ac.sampleRate);
+      buffer.copyToChannel(data, 0);
+      const gain = ac.createGain(); gain.gain.value = 0.22; gain.connect(ac.destination);
+      audio = { ctx: ac, buffer, gain, src: null };
+    }
+    audio.ctx.resume();
+    const src = audio.ctx.createBufferSource(); src.buffer = audio.buffer; src.connect(audio.gain);
+    startAt = audio.ctx.currentTime + 0.05; src.start(startAt); audio.src = src;
+    if ('speechSynthesis' in window) narration().forEach(n => timers.push(setTimeout(() => say(n.text), (n.start + 0.05) * 1000)));
+    lastFrame = -1; rafId = requestAnimationFrame(tick);
+  }
+  function startOverlay() {
+    renderFrame(0);
+    ctx.fillStyle = 'rgba(3, 5, 12, 0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.shadowColor = C.obs; ctx.shadowBlur = 30; ctx.fillStyle = C.obs;
+    ctx.beginPath(); ctx.moveTo(W / 2 - 26, H / 2 - 40); ctx.lineTo(W / 2 + 40, H / 2); ctx.lineTo(W / 2 - 26, H / 2 + 40); ctx.closePath(); ctx.fill(); ctx.restore();
+    text('点击播放（含背景音乐与语音解说）', W / 2, H / 2 + 90, C.text, `bold 22px ${SANS}`, 'center', 'middle');
+    text(`时长 ${REAL.toFixed(0)} 秒 · 播放中再次点击可重播`, W / 2, H / 2 + 126, C.dim, `15px ${SANS}`, 'center', 'middle');
+  }
+
+  // ===== 导出接口（供 make-video.js / check.js 调用）=====
+  window.renderFrame = renderFrame;
+  window.TOTAL_FRAMES = TOTAL_FRAMES;
+  window.VIDEO_META = {
+    fps: FPS, width: W, height: H, scale: SCALE, duration: REAL, frames: TOTAL_FRAMES,
+    narration: narration(), narrationLead: LEAD,
+    segs: SEG.map(s => ({ s: s.s, e: s.e, cap: s.cap || '' }))
+  };
+  window.musicWavBase64 = musicWavBase64;
+  if (new URLSearchParams(location.search).has('capture')) { document.body.classList.add('capture'); renderFrame(0); }
+  else {
+    if ('speechSynthesis' in window) speechSynthesis.getVoices();   // 预加载语音列表
+    canvas.addEventListener('click', play);
+    startOverlay();
+  }
+})();
+</script>
+</body>
+</html>
+

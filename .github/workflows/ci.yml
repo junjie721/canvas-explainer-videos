@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: 结构与离线测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 脚本语法
+        run: node tests/syntax-check.js
+      - name: 技能包结构
+        run: node tests/skill-manifest.js
+      - name: 模板离线冒烟测试
+        run: node tests/smoke-template.js
+      - name: 安装脚本行为
+        run: node tests/install-script.js
+
+  render:
+    name: 真实浏览器渲染示例
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 安装 Playwright + Chromium
+        run: |
+          npm i -g playwright
+          npx playwright install --with-deps chromium
+      - name: 渲染示例的全部帧并生成预览图
+        run: node making-canvas-explainer-videos/scripts/check.js examples/tcp-handshake/page.html --preview 0.25,0.75
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: previews
+          path: examples/tcp-handshake/preview
+          if-no-files-found: warn

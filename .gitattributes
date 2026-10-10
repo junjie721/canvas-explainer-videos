@@ -1,0 +1,7 @@
+# 统一换行，避免 Windows 上提交后 Linux/macOS 里脚本带 CRLF
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.mp4 binary

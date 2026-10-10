@@ -1,0 +1,14 @@
+node_modules/
+npm-debug.log*
+
+# 脚本默认产物与预览目录（examples/ 里的示例页与成片是有意提交的）
+page.mp4
+preview/
+*.tmp
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.codeartsdoer/

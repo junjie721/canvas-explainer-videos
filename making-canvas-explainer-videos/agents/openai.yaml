@@ -1,0 +1,4 @@
+interface:
+  display_name: "Canvas 科普动画视频"
+  short_description: "用纯代码 Canvas 动画做带解说的科普视频，导出 MP4"
+  default_prompt: "用 $making-canvas-explainer-videos 把这个主题做成 30 秒带中文解说的 Canvas 科普动画，并导出 MP4。"
