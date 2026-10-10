@@ -1,4 +1,4 @@
 interface:
-  display_name: "Canvas 科普动画视频"
-  short_description: "用纯代码 Canvas 动画做带解说的科普视频，导出 MP4"
-  default_prompt: "用 $making-canvas-explainer-videos 把这个主题做成 30 秒带中文解说的 Canvas 科普动画，并导出 MP4。"
+  display_name: "Canvas Explainer Videos"
+  short_description: "Build narrated explainer videos from pure code, export MP4"
+  default_prompt: "Use $making-canvas-explainer-videos to turn this topic into a 30-second narrated Canvas explainer video and export it to MP4."

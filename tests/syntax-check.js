@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 对所有技能脚本跑 node --check（跨平台，CI 的 Windows/macOS/Linux 都能用）
+// Run `node --check` over every skill script (works on Windows, macOS and Linux CI).
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -12,5 +12,5 @@ for (const f of files) {
   console.log(`${r.status === 0 ? '✓' : '✗'} ${f}`);
   if (r.status !== 0) { bad++; console.log((r.stderr || '').trim()); }
 }
-console.log(bad ? `\n${bad} 个脚本有语法错误` : `\n${files.length} 个脚本语法正确`);
+console.log(bad ? `\n${bad} script(s) have syntax errors` : `\n${files.length} scripts are syntactically valid`);
 process.exit(bad ? 1 : 0);

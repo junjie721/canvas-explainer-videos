@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 验证 install.mjs 的安装/跳过/覆盖/自定义目录行为（不碰真实用户目录，全部在临时目录里做）
+// Check install.mjs: install / skip / force / custom directory. Everything happens in a temp
+// directory — the real user skill directories are never touched.
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -16,34 +17,34 @@ const hasSkill = dir => fs.existsSync(path.join(dir, SKILL, 'SKILL.md')) && fs.e
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-install-test-'));
 try {
   const r0 = run(['--help']);
-  check(r0.status === 0 && /--target/.test(r0.stdout), '--help 可用且说明参数');
+  check(r0.status === 0 && /--target/.test(r0.stdout), '--help works and documents the flags');
 
-  // 项目级安装（默认目录来自 --project）
+  // project-level install (directory comes from --project)
   const r1 = run(['--target', 'project', '--project', tmp]);
-  check(r1.status === 0, '项目级安装返回 0');
-  check(hasSkill(path.join(tmp, '.claude', 'skills')), '装到 .claude/skills');
-  check(hasSkill(path.join(tmp, '.codeartsdoer', 'skills')), '装到 .codeartsdoer/skills');
+  check(r1.status === 0, 'project install exits 0');
+  check(hasSkill(path.join(tmp, '.claude', 'skills')), 'installed into .claude/skills');
+  check(hasSkill(path.join(tmp, '.codeartsdoer', 'skills')), 'installed into .codeartsdoer/skills');
 
-  // 重复安装：跳过且返回非 0
+  // installing twice skips instead of silently overwriting
   const r2 = run(['--target', 'project', '--project', tmp]);
-  check(r2.status !== 0 && /跳过/.test(r2.stdout), '重复安装会跳过并返回非 0（不静默覆盖）');
-  check(hasSkill(path.join(tmp, '.claude', 'skills')), '跳过时原文件仍在');
+  check(r2.status !== 0 && /skip/i.test(r2.stdout), 'second install skips and exits non-zero (no silent overwrite)');
+  check(hasSkill(path.join(tmp, '.claude', 'skills')), 'skipped install left the existing files alone');
 
-  // --force 覆盖
+  // --force overwrites
   const r3 = run(['--target', 'project', '--project', tmp, '--force']);
-  check(r3.status === 0 && /已安装/.test(r3.stdout), '--force 覆盖安装成功');
+  check(r3.status === 0 && /install/i.test(r3.stdout), '--force overwrites');
 
-  // 自定义目录
+  // custom destination
   const custom = path.join(tmp, 'somewhere', 'skills');
   const r4 = run(['--dir', custom]);
-  check(r4.status === 0 && hasSkill(custom), '--dir 自定义目录可用');
+  check(r4.status === 0 && hasSkill(custom), '--dir installs into a custom directory');
 
-  // 错误参数
+  // bad argument
   const r5 = run(['--target', 'nope']);
-  check(r5.status !== 0 && /未知的 --target/.test(r5.stderr), '未知 --target 会报错');
+  check(r5.status !== 0 && /unknown --target/i.test(r5.stderr), 'an unknown --target fails with a clear message');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(fails.length ? `\n${fails.length} 项未通过` : '\n安装脚本行为符合预期');
+console.log(fails.length ? `\n${fails.length} check(s) failed` : '\ninstall script behaves as expected');
 process.exit(fails.length ? 1 : 0);

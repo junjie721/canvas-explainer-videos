@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// 把「Canvas 动画 HTML」导出为带背景音乐 + 语音解说的 MP4
-// 用法: node make-video.js <page.html> [--voice zh-CN-XiaoxiaoNeural] [--rate +5%] [--out x.mp4] [--keep] [--reuse] [--workers 4] [--quality 0.95] [--format jpeg|png]
-// HTML 需满足 template.html 的接口约定: window.renderFrame(n) / window.VIDEO_META / window.musicWavBase64()
+// Export a Canvas animation page to MP4 with synthesized background music and TTS narration.
+// Usage: node make-video.js <page.html> [--voice en-US-AriaNeural] [--rate +5%] [--out x.mp4]
+//        [--keep] [--reuse] [--workers 4] [--quality 0.95] [--format jpeg|png]
+// The page must follow the template.html interface:
+//   window.renderFrame(n) / window.VIDEO_META / window.musicWavBase64()
 const fs = require('fs'), path = require('path'), os = require('os'), { spawnSync } = require('child_process'), { pathToFileURL } = require('url');
 const { loadPlaywright, launchBrowser, findFfmpeg, findEdgeTts, WIN } = require('./lib');
 
@@ -9,16 +11,18 @@ const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
 const file = argv.find(a => a.endsWith('.html'));
 if (!file || argv.includes('--help')) {
-  console.log('用法: node make-video.js <page.html> [--voice zh-CN-XiaoxiaoNeural] [--rate +5%] [--out x.mp4] [--keep] [--reuse] [--workers 4] [--quality 0.95] [--format jpeg|png]\n' +
-    '  --voice   edge-tts 声音（男声: zh-CN-YunxiNeural；英文: en-US-AriaNeural）\n' +
-    '  --keep    保留中间文件（帧/音频）  --reuse  复用上次的帧，只重做音频（page.html 改过会自动失效）\n' +
-    '  --quality 0.3~1 的 JPEG 质量（默认 0.95）  --format png  无损帧（文字多时更清晰，体积更大）\n' +
-    '  --workers 并行导帧的页面数（默认 4，上限 8）');
-  process.exit(file || argv.includes('--help') ? 0 : 1);   // --help 单独调用算成功
+  console.log('usage: node make-video.js <page.html> [--voice <name>] [--rate +5%] [--out x.mp4] [--keep] [--reuse] [--workers 4] [--quality 0.95] [--format jpeg|png]\n' +
+    '  --voice   edge-tts voice; default follows the narration language\n' +
+    '            (zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural for Chinese, en-US-AriaNeural / en-US-GuyNeural for English)\n' +
+    '  --keep    keep intermediate files (frames/audio)   --reuse  reuse the frames and redo only the audio\n' +
+    '  --quality JPEG quality 0.3~1 (default 0.95)        --format png  lossless frames (crisper text, larger files)\n' +
+    '  --workers parallel browser pages for frame export (default 4, max 8)');
+  process.exit(file || argv.includes('--help') ? 0 : 1);   // `--help` alone is a success
 }
 const htmlPath = path.resolve(file), name = path.basename(file, '.html');
-if (!fs.existsSync(htmlPath)) { console.error(`找不到 ${htmlPath}`); process.exit(1); }
-const voice = opt('--voice', 'zh-CN-XiaoxiaoNeural'), rate = opt('--rate', '+5%');
+if (!fs.existsSync(htmlPath)) { console.error(`file not found: ${htmlPath}`); process.exit(1); }
+let voice = opt('--voice', '') || null;                    // resolved from the narration language below
+const rate = opt('--rate', '+5%');
 const WORKERS = Math.min(8, Math.max(1, Math.round(+opt('--workers', 4)) || 4));
 const FMT = String(opt('--format', 'jpeg')).toLowerCase() === 'png' ? 'png' : 'jpeg';
 const EXT = FMT === 'png' ? 'png' : 'jpg', MIME = FMT === 'png' ? 'image/png' : 'image/jpeg';
@@ -30,48 +34,59 @@ const reuse = argv.includes('--reuse');
 if (!reuse) fs.rmSync(work, { recursive: true, force: true });
 fs.mkdirSync(frames, { recursive: true });
 const stale = reuse && fs.existsSync(sigFile) && fs.readFileSync(sigFile, 'utf8') !== sig;
-if (stale) console.log('提示：page.html 改动过，忽略 --reuse 重新导帧');
+if (stale) console.log('note: page.html changed, ignoring --reuse and re-exporting frames');
 const FF = findFfmpeg();
-// 老版本 ffmpeg（如 2018 构建）的 amix 没有 normalize 选项，它会固定按 1/输入数 归一化，用后续 volume=N 抵消
+// Older ffmpeg builds (e.g. the 2018 one) have no `normalize` option on amix and always normalize by
+// 1/N; compensate afterwards with volume=N, which is mathematically identical.
 const AMIX_NORMALIZE = /normalize/i.test(String(spawnSync(FF.ffmpeg, ['-hide_banner', '-h', 'filter=amix'], { encoding: 'utf8' }).stdout || ''));
-if (!AMIX_NORMALIZE) console.log('提示：当前 ffmpeg 的 amix 不支持 normalize，已改用 volume 补偿（听感一致）');
+if (!AMIX_NORMALIZE) console.log('note: this ffmpeg has no amix `normalize` option, compensating with volume (same result)');
 const amix = (n, dur) => AMIX_NORMALIZE ? `amix=inputs=${n}:normalize=0:duration=${dur}` : `amix=inputs=${n}:duration=${dur},volume=${n}`;
 
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`${path.basename(cmd)} 失败: ${(r.stderr || String(r.error)).slice(-1500)}`);
+  if (r.status !== 0) throw new Error(`${path.basename(cmd)} failed: ${(r.stderr || String(r.error)).slice(-1500)}`);
   return r;
 }
 const probe = f => parseFloat(run(FF.ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', f]).stdout);
 
-// 语音：优先 edge-tts（微软神经网络语音，需联网）→ Windows SAPI 离线语音 → macOS say
+// Which language is the narration written in? Decides the default voice and the offline fallback voice.
+function narrationScript(meta) {
+  const text = (meta.narration || []).map(n => n.text).join(' ');
+  const cjk = (text.match(/[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/g) || []).length;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  return cjk > latin ? 'cjk' : 'latin';
+}
+let sapiLang = 'en';
+
+// Narration: edge-tts (Microsoft neural voices, needs network) → Windows SAPI → macOS `say`.
 const PY = findEdgeTts();
-if (!PY) console.log('⚠ 未找到可用的 edge-tts（python -m pip install edge-tts），将改用系统离线语音；音色与浏览器预览不同');
+if (!PY) console.log('⚠ edge-tts not usable (python -m pip install edge-tts); falling back to the OS voice, which differs from the browser preview');
 function tts(text, base) {
   if (PY) {
     const mp3 = base + '.mp3';
     const r = spawnSync(PY, ['-m', 'edge_tts', '--voice', voice, `--rate=${rate}`, '--text', text, '--write-media', mp3], { encoding: 'utf8' });
     if (r.status === 0 && fs.existsSync(mp3) && fs.statSync(mp3).size > 1000) return { file: mp3, engine: 'edge-tts' };
-    // 已装 edge-tts 却失败（多为网络问题）：不要静默退回系统语音，否则同一视频里会混进两种音色
-    throw new Error(`edge-tts 合成失败：${(r.stderr || String(r.error)).slice(-300).trim()}\n  联网后重跑，加 --reuse 可跳过已导出的帧`);
+    // edge-tts is installed but this line failed (usually the network). Don't silently fall back to the
+    // OS voice, or one video ends up with two different voices.
+    throw new Error(`edge-tts failed: ${(r.stderr || String(r.error)).slice(-300).trim()}\n  check the network and re-run; add --reuse to skip the already-exported frames`);
   }
   const txt = base + '.txt'; fs.writeFileSync(txt, text, 'utf8');
-  if (WIN) {   // 文本走文件 + UTF-8 读取，避免 PowerShell 命令行中文乱码
+  if (WIN) {   // text goes through a file + UTF-8 read, so no command-line encoding surprises
     const wav = base + '.wav';
-    const q = s => "'" + String(s).replace(/'/g, "''") + "'";   // PowerShell 单引号内转义，防止路径含 ' 时炸掉
+    const q = s => "'" + String(s).replace(/'/g, "''") + "'";   // PowerShell single-quote escaping
     const ps = 'Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ' +
-      "$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -like 'zh*' } | Select-Object -First 1; " +
+      `$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -like '${sapiLang}*' } | Select-Object -First 1; ` +
       `if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }; $s.SetOutputToWaveFile(${q(wav)}); ` +
       `$s.Speak([IO.File]::ReadAllText(${q(txt)}, [Text.Encoding]::UTF8)); $s.Dispose()`;
     try { run('powershell', ['-NoProfile', '-Command', ps]); }
-    catch (e) {   // Server 版 Windows / 未装语音包时 System.Speech 会直接抛 NullReference
-      throw new Error('系统离线语音不可用（System.Speech 无语音包）：改装 edge-tts（python -m pip install edge-tts），' +
-        '或在“设置 → 时间和语言 → 语音”里添加中文语音包\n  ' + String(e.message).split('\n')[0]);
+    catch (e) {   // Server editions / missing voice packs make System.Speech throw a NullReference
+      throw new Error('the OS voice is unavailable (System.Speech has no voice packs): install edge-tts ' +
+        '(python -m pip install edge-tts), or add a voice in Settings → Time & language → Speech\n  ' + String(e.message).split('\n')[0]);
     }
     return { file: wav, engine: 'SAPI' };
   }
   if (process.platform === 'darwin') { const aiff = base + '.aiff'; run('say', ['-f', txt, '-o', aiff]); return { file: aiff, engine: 'say' }; }
-  throw new Error('没有可用的 TTS：python -m pip install edge-tts');
+  throw new Error('no usable TTS: python -m pip install edge-tts');
 }
 
 (async () => {
@@ -82,16 +97,19 @@ function tts(text, base) {
   const errs = []; page.on('pageerror', e => errs.push(e.message));
   await page.goto(url);
   const meta = await page.evaluate(() => window.VIDEO_META);
-  if (!meta) throw new Error('页面缺少 window.VIDEO_META，请基于 template.html 编写');
-  if (errs.length) throw new Error('页面脚本报错: ' + errs.join(' | '));
+  if (!meta) throw new Error('the page has no window.VIDEO_META — start from template.html');
+  if (errs.length) throw new Error('page threw: ' + errs.join(' | '));
+  const script = narrationScript(meta);
+  if (!voice) voice = script === 'cjk' ? 'zh-CN-XiaoxiaoNeural' : 'en-US-AriaNeural';
+  sapiLang = script === 'cjk' ? 'zh' : 'en';
 
-  console.log(`[1/4] 合成背景音乐（${meta.duration}s）`);
+  console.log(`[1/4] synthesizing background music (${meta.duration}s)`);
   const music = path.join(work, 'music.wav');
   fs.writeFileSync(music, Buffer.from(await page.evaluate(() => window.musicWavBase64()), 'base64'));
 
-  const VW = meta.width || 1280, VH = meta.height || 720;    // 导出分辨率由 canvas 尺寸决定，viewport 只是让截图前布局正常
+  const VW = meta.width || 1280, VH = meta.height || 720;    // export size comes from the canvas; the viewport only keeps the layout sane
   await page.setViewportSize({ width: VW, height: VH });
-  console.log(`[2/4] 导出 ${meta.frames} 帧（${WORKERS} 页并行，${VW}x${VH}，canvas → ${FMT.toUpperCase()}）`);
+  console.log(`[2/4] exporting ${meta.frames} frames (${WORKERS} pages in parallel, ${VW}x${VH}, canvas → ${FMT.toUpperCase()})`);
   const have = fs.readdirSync(frames).filter(f => f.endsWith('.' + EXT)).length;
   if (!(reuse && !stale && have === meta.frames)) {
     const per = Math.ceil(meta.frames / WORKERS); let done = 0, nextLog = 0;
@@ -115,20 +133,20 @@ function tts(text, base) {
   await browser.close();
 
   const narr = meta.narration || [];
-  console.log(`[3/4] 语音解说 ${narr.length} 句（${PY ? 'edge-tts ' + voice : '离线 TTS'}）`);
+  console.log(`[3/4] narration: ${narr.length} line(s) (${PY ? 'edge-tts ' + voice : 'offline TTS'})`);
   const lines = narr.map((n, i) => {
     const r = tts(n.text, path.join(work, `voice_${i}`)), dur = probe(r.file);
     const end = i + 1 < narr.length ? narr[i + 1].start : meta.duration - 0.3;
     const avail = end - n.start - 0.15, tempo = dur > avail ? Math.min(1.5, dur / avail) : 1;
-    const warn = tempo > 1.25 ? '  ⚠ 太长，建议缩短这句' : '';
-    console.log(`      #${i} [${r.engine}] ${dur.toFixed(2)}s / 窗口 ${avail.toFixed(2)}s${tempo > 1 ? ` → 加速 x${tempo.toFixed(2)}` : ''}${warn}  ${n.text}`);
+    const warn = tempo > 1.25 ? '  ⚠ too long, consider shortening this line' : '';
+    console.log(`      #${i} [${r.engine}] ${dur.toFixed(2)}s / window ${avail.toFixed(2)}s${tempo > 1 ? ` → sped up x${tempo.toFixed(2)}` : ''}${warn}  ${n.text}`);
     return { ...n, ...r, tempo };
   });
 
-  console.log('[4/4] 混音（解说时自动压低音乐）并编码 MP4');
+  console.log('[4/4] mixing (music ducks under the narration) and encoding MP4');
   const args = ['-y', '-framerate', String(meta.fps), '-i', path.join(frames, 'f_%05d.' + EXT), '-i', music];
   lines.forEach(l => args.push('-i', l.file));
-  // 老版本 ffmpeg 的 amix/sidechaincompress 无法自行推断声道布局，各处都显式声明 mono
+  // Older ffmpeg cannot infer the channel layout for amix/sidechaincompress, so every branch is explicit.
   const fc = ['[1:a]aresample=44100,aformat=channel_layouts=mono,volume=0.35[bgm]'];
   if (lines.length) {
     lines.forEach((l, i) => {
@@ -145,6 +163,5 @@ function tts(text, base) {
     '-r', String(meta.fps), '-c:a', 'aac', '-b:a', '160k', '-t', String(meta.duration), out);
   run(FF.ffmpeg, args);
   if (!argv.includes('--keep')) fs.rmSync(work, { recursive: true, force: true });
-  console.log(`完成: ${out}（目标 ${meta.duration}s，实测 ${probe(out).toFixed(2)}s）`);
+  console.log(`done: ${out} (target ${meta.duration}s, measured ${probe(out).toFixed(2)}s)`);
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });
-
