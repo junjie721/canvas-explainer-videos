@@ -1,6 +1,6 @@
 # Canvas Explainer Videos — an Agent Skill
 
-[![CI](https://github.com/junjie721/making-canvas-explainer-videos/actions/workflows/ci.yml/badge.svg)](https://github.com/junjie721/making-canvas-explainer-videos/actions/workflows/ci.yml)
+[![CI](https://github.com/junjie721/canvas-explainer-videos/actions/workflows/ci.yml/badge.svg)](https://github.com/junjie721/canvas-explainer-videos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **In one sentence:** write one self-contained HTML + Canvas file and get a narrated explainer video as an MP4 — no image assets, no audio files, no video editor.
@@ -22,8 +22,8 @@
 ### 1. Install the skill
 
 ```bash
-git clone https://github.com/junjie721/making-canvas-explainer-videos.git
-cd making-canvas-explainer-videos
+git clone https://github.com/junjie721/canvas-explainer-videos.git
+cd canvas-explainer-videos
 node install.mjs                 # Codex: ~/.codex/skills
 ```
 
@@ -47,7 +47,7 @@ cp -r making-canvas-explainer-videos ~/.codex/skills/          # macOS / Linux
 Copy-Item ".\making-canvas-explainer-videos" "$env:USERPROFILE\.codex\skills\" -Recurse   # Windows
 ```
 
-Or let Codex do it for you: *"install the skill from https://github.com/junjie721/making-canvas-explainer-videos/tree/main/making-canvas-explainer-videos"*.
+Or let Codex do it for you: *"install the skill from https://github.com/junjie721/canvas-explainer-videos/tree/main/making-canvas-explainer-videos"*.
 
 The skill shows up in the agent's skill list on the next turn.
 
@@ -165,6 +165,7 @@ The skill only depends on the shared skill format (`SKILL.md` with YAML frontmat
 |       `-- lib.js                      # browser/ffmpeg/python discovery + timeline validation
 |-- examples/tcp-handshake/             # a complete worked example (40s export included)
 |-- docs/demo.gif                       # the animation at the top of this README
+|-- docs/social-preview.png             # 1280x640 card to upload as the repository social preview
 |-- install.mjs                         # one-command install for several agents
 |-- AGENTS.md                           # entry point for any agent that reads AGENTS.md
 `-- tests/                              # browser- and network-free smoke tests (used by CI)
@@ -193,8 +194,8 @@ with a real Chromium.
 **用纯代码生成带解说的科普动画视频**：一个自包含的 HTML + Canvas 文件负责画面，Web Audio 合成背景音乐，TTS 生成解说，Playwright 逐帧导出，ffmpeg 混音封装成 MP4——不需要任何图片、音频素材。
 
 ```bash
-git clone https://github.com/junjie721/making-canvas-explainer-videos.git
-cd making-canvas-explainer-videos
+git clone https://github.com/junjie721/canvas-explainer-videos.git
+cd canvas-explainer-videos
 node install.mjs                 # 装进 Codex（~/.codex/skills）；--target claude / all / project 可选
 node making-canvas-explainer-videos/scripts/doctor.js   # 依赖自检：缺什么、怎么装一目了然
 ```
