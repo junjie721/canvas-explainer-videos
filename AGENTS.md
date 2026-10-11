@@ -30,6 +30,8 @@ node making-canvas-explainer-videos/scripts/make-video.js my-video/page.html
   segment it describes (`check.js` verifies both and fails the run otherwise).
 - `window.VIDEO_META` (`fps/width/height/scale/duration/frames/narrationLead/narration/segs`) and
   `window.musicWavBase64()` are the contract used by `check.js`, `make-video.js` and the tests.
+- Every concrete number, ID, version or price that appears on screen must come from a real tool run,
+  or be labelled as illustrative. `check.js` validates timing, layout and reproducibility — never facts.
 
 ## Verify any change
 
