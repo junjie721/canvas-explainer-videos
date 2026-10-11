@@ -1,0 +1,36 @@
+{
+  "formula": "attention work ~ n^2 (each token attends to every token)",
+  "base": 2048,
+  "rows": [
+    {
+      "tokens": 2048,
+      "label": "2k",
+      "relative": 1,
+      "comparisons": 4194304
+    },
+    {
+      "tokens": 4096,
+      "label": "4k",
+      "relative": 4,
+      "comparisons": 16777216
+    },
+    {
+      "tokens": 8192,
+      "label": "8k",
+      "relative": 16,
+      "comparisons": 67108864
+    },
+    {
+      "tokens": 16384,
+      "label": "16k",
+      "relative": 64,
+      "comparisons": 268435456
+    },
+    {
+      "tokens": 32768,
+      "label": "32k",
+      "relative": 256,
+      "comparisons": 1073741824
+    }
+  ]
+}

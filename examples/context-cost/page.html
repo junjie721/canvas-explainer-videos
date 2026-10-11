@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Example: The Journey of an HTTP Request · explainer animation</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  /* The preview scales the canvas by its intrinsic aspect ratio; the exported resolution is the
+     canvas width/height attributes (= W/H below), so change the aspect ratio in those two places only. */
+  canvas { display: block; max-width: 100vw; max-height: 100vh; width: auto; height: auto; cursor: pointer; }
+  body.capture canvas { max-width: none; max-height: none; cursor: default; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="1280" height="720"></canvas>
+<script>
+/*
+ * Canvas explainer template (single file, zero dependencies, no external assets)
+ * ───────────────────────────────────────────────
+ * Edit only the CONTENT section: TITLE / INTRO / SEG / NARRATION / scene(t).
+ * Everything else (background, helpers, music synthesis, speech, playback, export interface) stays as is.
+ *
+ * Interface contract (relied on by make-video.js / check.js):
+ *   ?capture=1               → don't autoplay; used for frame-by-frame export
+ *   window.renderFrame(n)    → pure function of the frame number (no Math.random / Date.now)
+ *   window.VIDEO_META        → { fps, width, height, scale, duration, frames, narrationLead, narration:[{start,text}], segs:[{s,e,cap}] }
+ *   window.musicWavBase64()  → background music as a WAV data URL (base64), as long as the video
+ */
+(() => {
+  'use strict';
+
+  // ===== basic parameters =====
+  const W = 1280, H = 720, FPS = 30, DURATION = 30;   // DURATION: animation timeline length in seconds; SEG/NARRATION use this timeline
+  const SCALE = 2.0;                                   // time stretch: leaves room for narration (real length = DURATION × SCALE)
+  const LEAD = 0.3;                                    // every narration line starts 0.3s after its visual beat (check.js maps it back)
+  const REAL = DURATION * SCALE;                       // actual video length in seconds
+  const TOTAL_FRAMES = Math.round(FPS * REAL);
+  const TAU = Math.PI * 2;
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const C = {
+    user: '#4cc9f0', agent: '#a78bfa', think: '#ffd166', tool: '#ff9f1c', obs: '#2ee59d', answer: '#5eead4', err: '#ff5c7a',
+    gray: '#8aa0c8', slot: '#5a6a9a', text: '#dbe7ff', dim: 'rgba(170, 190, 230, 0.62)'
+  };
+  const MONO = '"JetBrains Mono", Consolas, "Courier New", monospace';
+  const SANS = '"Segoe UI", "Helvetica Neue", Arial, "Microsoft YaHei", "PingFang SC", sans-serif';
+
+  // ===== generic helpers =====
+  let seed = 20261010;                                 // fixed seed: keeps frame export reproducible
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const stars = Array.from({ length: 90 }, () => ({ x: rnd() * W, y: rnd() * H, r: rnd() * 1.3 + 0.2, a: rnd() * 0.5 + 0.15, p: rnd() * TAU }));
+  const clamp01 = x => Math.max(0, Math.min(1, x));
+  const prog = (t, a, b) => clamp01((t - a) / (b - a));                                   // progress of t inside [a,b], 0..1
+  const ease = x => { x = clamp01(x); return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+  const vis = (t, a, b, f = 0.4) => Math.min(prog(t, a, a + f), 1 - prog(t, b - f, b));  // visible inside [a,b] with fades
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; };
+  // The last SEG whose start is <= t: a gap or an over-long SEG can't make the scene jump to the last one
+  // (check.js reports both as errors instead).
+  const segAt = t => SEG.reduce((hit, s) => (t >= s.s && s.s > hit.s ? s : hit), SEG[0]);
+
+  function withA(a, fn) { if (a <= 0) return; ctx.save(); ctx.globalAlpha *= Math.min(1, a); fn(); ctx.restore(); }
+  function text(str, x, y, color, font, align, baseline) {
+    ctx.save(); ctx.fillStyle = color; ctx.font = font;
+    ctx.textAlign = align || 'left'; ctx.textBaseline = baseline || 'alphabetic';
+    ctx.fillText(str, x, y); ctx.restore();
+  }
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r); ctx.closePath();
+  }
+  function dot(x, y, r, color, glow, alpha) {
+    ctx.save(); ctx.globalAlpha *= (alpha === undefined ? 1 : Math.max(0, alpha));
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = glow || 0;
+    ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, r), 0, TAU); ctx.fill(); ctx.restore();
+  }
+  function wrap(str, maxW, font) {
+    ctx.save(); ctx.font = font;
+    const lines = []; let cur = '';
+    for (const ch of str) { if (ctx.measureText(cur + ch).width > maxW && cur) { lines.push(cur); cur = ch; } else cur += ch; }
+    if (cur) lines.push(cur);
+    ctx.restore(); return lines;
+  }
+  function typed(str, p, t) {                          // typewriter effect
+    const chars = Array.from(str), n = Math.floor(chars.length * clamp01(p));
+    const cursor = p > 0 && p < 1 && Math.floor(t * 4) % 2 === 0 ? '▌' : '';
+    return chars.slice(0, n).join('') + cursor;
+  }
+  function box(x, y, w, h, color, alpha, o = {}) {     // rounded glowing card; o = { fill, dash, glow, lw, r, stroke }; fill:'none' skips the fill
+    if (alpha <= 0) return;
+    ctx.save(); ctx.globalAlpha *= Math.min(1, alpha);
+    rr(x, y, w, h, o.r || 12);
+    if (o.fill !== 'none') { ctx.fillStyle = o.fill || 'rgba(12, 20, 44, 0.9)'; ctx.fill(); }
+    if (o.dash) ctx.setLineDash(o.dash);
+    ctx.strokeStyle = o.stroke || rgba(color, 0.8); ctx.lineWidth = o.lw || 1.5;
+    ctx.shadowColor = color; ctx.shadowBlur = o.glow === undefined ? 10 : o.glow;
+    ctx.stroke(); ctx.restore();
+  }
+  function arrow(x1, y1, x2, y2, color, alpha, o = {}) {   // o = { lw, dash, offset }; an offset that depends on t makes the dashes flow
+    if (alpha <= 0) return;
+    ctx.save(); ctx.globalAlpha *= Math.min(1, alpha);
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = o.lw || 2;
+    if (o.dash) { ctx.setLineDash(o.dash); ctx.lineDashOffset = o.offset || 0; }
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+    const a = Math.atan2(y2 - y1, x2 - x1), s = 10;
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - s * Math.cos(a - 0.4), y2 - s * Math.sin(a - 0.4));
+    ctx.lineTo(x2 - s * Math.cos(a + 0.4), y2 - s * Math.sin(a + 0.4));
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  function cross(x, y, s, color, alpha) {
+    withA(alpha, () => {
+      ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
+    });
+  }
+  function packet(x1, y1, x2, y2, p, color, label) {   // glowing packet flying along a line (trail + label)
+    if (p <= 0 || p >= 1) return;
+    const e = ease(p), x = lerp(x1, x2, e), y = lerp(y1, y2, e);
+    for (let i = 6; i >= 1; i--) dot(lerp(x1, x2, Math.max(0, e - i * 0.025)), lerp(y1, y2, Math.max(0, e - i * 0.025)), 6 - i * 0.6, color, 0, 0.5 - i * 0.06);
+    dot(x, y, 8, color, 22); dot(x, y, 2.5, '#ffffff');
+    if (label) withA(Math.min(1, p * 6, (1 - p) * 6), () => text(label, x, y - 24, color, `bold 14px ${MONO}`, 'center', 'middle'));
+  }
+  function panel(x, y, w, rows) {                      // top-right live values panel: rows = [[label, value, color], ...]
+    box(x, y, w, 24 + rows.length * 34, C.agent, 1, { fill: 'rgba(12, 22, 48, 0.8)', glow: 0 });
+    rows.forEach(([k, v, col], i) => {
+      const ry = y + 29 + i * 34;
+      dot(x + 22, ry, 5, col, 8);
+      text(k, x + 38, ry, C.text, `16px ${SANS}`, 'left', 'middle');
+      text(v, x + w - 20, ry, col, `bold 18px ${MONO}`, 'right', 'middle');
+    });
+  }
+  function background(t) {
+    const g = ctx.createRadialGradient(W * 0.45, H * 0.5, 50, W * 0.5, H * 0.5, W * 0.8);
+    g.addColorStop(0, '#0e1533'); g.addColorStop(0.55, '#080d1d'); g.addColorStop(1, '#03050b');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.strokeStyle = 'rgba(80, 140, 255, 0.07)'; ctx.lineWidth = 1;
+    for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke(); }
+    for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke(); }
+    ctx.restore();
+    for (const s of stars) dot(s.x, s.y, s.r, '#a0c8ff', 0, s.a * (0.6 + 0.4 * Math.sin(t * 2 + s.p)));
+  }
+  function header(t, seg) {
+    text(TITLE, 40, 60, C.text, `bold 30px ${SANS}`);
+    if (seg.cap) withA(prog(t, seg.s, seg.s + 0.4), () => text(seg.cap, 40, 98, seg.c, `bold 19px ${SANS}`));
+  }
+  function intro(t) {                                  // title card: 0 ~ 2.6s
+    const a = Math.min(prog(t, 0.1, 0.8), 1 - prog(t, 2.0, 2.6));
+    withA(a, () => {
+      const lift = (1 - ease(prog(t, 0.1, 1.0))) * 20;
+      ctx.save(); ctx.strokeStyle = INTRO.color; ctx.lineWidth = 4; ctx.shadowColor = INTRO.color; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(W / 2, 250 + lift, 52, 0, TAU); ctx.stroke(); ctx.restore();
+      text(INTRO.num, W / 2, 252 + lift, INTRO.color, `bold 52px ${MONO}`, 'center', 'middle');
+      text(INTRO.title, W / 2, 370 + lift, '#ffffff', `bold 46px ${SANS}`, 'center', 'middle');
+      withA(prog(t, 0.6, 1.3), () => text(INTRO.sub, W / 2, 435, C.dim, `20px ${SANS}`, 'center', 'middle'));
+    });
+  }
+  function progress(frame, t) {                        // segmented progress bar at the bottom
+    const x = 40, y = 690, w = W - 80;
+    for (const s of SEG) {
+      const sx = x + w * s.s / DURATION, sw = w * (s.e - s.s) / DURATION - 2;
+      ctx.fillStyle = rgba(s.c, 0.18); ctx.fillRect(sx, y, sw, 5);
+      const f = clamp01((t - s.s) / (s.e - s.s));
+      if (f > 0) { ctx.fillStyle = s.c; ctx.fillRect(sx, y, sw * f, 5); }
+    }
+    text(`t = ${(frame / FPS).toFixed(2)}s / ${REAL.toFixed(2)}s`, x, y - 10, C.dim, `13px ${MONO}`);
+    text(`frame ${frame + 1}/${TOTAL_FRAMES} · ${FPS}fps`, x + w, y - 10, C.dim, `13px ${MONO}`, 'right');
+  }
+
+  // ===== CONTENT =====
+  // 内容设计（先写这个，再写画面）：
+  //   学习目标：看完 60 秒能回答「为什么上下文越长越贵，它为什么必须有上限」
+  //   节拍：钩子（翻一倍长度 → 四倍计算）→ 矛盾（多给显存？）→ 机制（两两比较 = n²）→ 边界（标称≠有效）→ 结论（怎么用）
+  //   视觉骨架：规模条形（references/visual-grammars.md 第 3 种），不用流水线
+  //   数字出处：cost-check.mjs 算出的 attention-cost.json（2k=1×, 4k=4×, 8k=16×, 16k=64×）
+  const TITLE = '上下文为什么有上限？';
+  const INTRO = { num: 'n²', title: '越长越贵', sub: '长度翻一倍，计算量翻四倍', color: C.user };
+  const SEG = [
+    { s: 0,   e: 3.5, c: C.gray,  cap: '' },
+    { s: 3.5, e: 8,   c: C.user,  cap: '① 长度翻一倍，计算量翻四倍' },
+    { s: 8,   e: 14,  c: C.think, cap: '② 多给点显存不就行了？没那么简单' },
+    { s: 14,  e: 21,  c: C.tool,  cap: '③ 注意力要两两比较，所以按 n² 增长' },
+    { s: 21,  e: 26,  c: C.err,   cap: '④ 标称上限 ≠ 真正能记住的长度' },
+    { s: 26,  e: 30,  c: C.obs,   cap: '⑤ 关键指令放两端，长材料先检索' }
+  ];
+  const NARRATION = [
+    [0,   '上下文从两千加到四千，长度只翻一倍，计算量却翻了四倍。'],
+    [3.5, '模型的上下文是有上限的，而且成本不是线性增长——这就是它必须封顶的原因。'],
+    [8,   '你会想，多给点显存不就行了？问题出在注意力：每个 token 都要和前面所有 token 比一次。'],
+    [14,  '所以长度翻倍，比较次数就变成四倍；再翻一倍，就变成十六倍。这就是平方增长。'],
+    [21,  '各家的标称上限从几千到上百万 token 不等，但真正能记住的往往没那么多。'],
+    [26,  '所以把重要的指令放开头或结尾，长材料先检索再喂给它。']
+  ];
+
+  function scene(t) {
+    // 真实相对计算量（attention-cost.json）：以 2k 为 1×
+    const BARS = [['2k', 1], ['4k', 4], ['8k', 16], ['16k', 64]];
+    const x0 = 250, maxW = 800, unit = maxW / 64;
+    const grow = i => prog(t, 14.0 + i * 0.45, 14.6 + i * 0.45);
+
+    // ③ 规模条形：长度翻倍，条长按平方跳
+    withA(prog(t, 13.4, 14.0), () => text('注意力计算量（以 2k 为 1×，n² 增长）', x0, 232, C.dim, `16px ${SANS}`, 'left', 'middle'));
+    BARS.forEach(([label, rel], i) => withA(grow(i), () => {
+      const y = 300 + i * 82, w = Math.max(8, unit * rel);
+      text(label, x0 - 26, y, C.text, `bold 20px ${MONO}`, 'right', 'middle');
+      ctx.save();
+      ctx.fillStyle = rgba(i === 3 ? C.err : C.user, 0.16); ctx.fillRect(x0, y - 18, maxW, 36);
+      ctx.fillStyle = i === 3 ? C.err : C.user; ctx.fillRect(x0, y - 18, w, 36);
+      ctx.restore();
+      text(`${rel}×`, x0 + maxW + 20, y, i === 3 ? C.err : C.text, `bold 20px ${MONO}`, 'left', 'middle');
+    }));
+
+    // ① 钩子：两个数字直接对撞
+    withA(vis(t, 3.8, 8.0), () => {
+      text('长度 ×2', 430, 330, C.user, `bold 34px ${SANS}`, 'center', 'middle');
+      arrow(560, 330, 700, 330, C.dim, 0.7, { lw: 3 });
+      text('计算量 ×4', 850, 330, C.err, `bold 34px ${SANS}`, 'center', 'middle');
+      text('注意：不是 ×2', 850, 390, C.dim, `16px ${SANS}`, 'center', 'middle');
+    });
+
+    // ② 矛盾：加显存是线性思维，被红叉否掉
+    withA(vis(t, 8.3, 13.9), () => {
+      box(340, 300, 600, 90, C.think, 1, { fill: 'rgba(12, 20, 44, 0.86)', glow: 10 });
+      text('多给点显存，不就够了吗？', 640, 345, C.think, `bold 24px ${SANS}`, 'center', 'middle');
+      cross(880, 330, 16, C.err, 0.85);
+      text('因为每个 token 都要和前面所有 token 比一次', 640, 450, C.text, `20px ${SANS}`, 'center', 'middle');
+      const n = 12;
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+        const a = prog(t, 10.5 + (i * n + j) * 0.006, 10.8 + (i * n + j) * 0.006);
+        if (a > 0) dot(520 + i * 20, 510 + j * 12, 2.6, C.think, 0, a * 0.9);
+      }
+      text('12 × 12 = 144 次比较', 780, 530, C.dim, `15px ${MONO}`, 'left', 'middle');
+    });
+
+    // ④ 边界
+    withA(vis(t, 21.3, 25.9), () => {
+      box(250, 596, 800, 62, C.err, 1, { fill: 'rgba(40, 12, 22, 0.86)', glow: 10 });
+      text('标称上限 ≠ 真正能记住的长度', 650, 627, C.err, `bold 22px ${SANS}`, 'center', 'middle');
+    });
+
+    // ⑤ 结论：两条可操作的规则
+    withA(vis(t, 26.3, 29.9), () => {
+      box(250, 574, 390, 88, C.obs, 1, { fill: 'rgba(10, 30, 26, 0.86)', glow: 10 });
+      text('关键指令放开头或结尾', 445, 618, C.obs, `bold 21px ${SANS}`, 'center', 'middle');
+      box(670, 574, 390, 88, C.obs, 1, { fill: 'rgba(10, 30, 26, 0.86)', glow: 10 });
+      text('长材料先检索，再喂进去', 865, 618, C.obs, `bold 21px ${SANS}`, 'center', 'middle');
+    });
+
+    panel(930, 26, 320, [
+      ['阶段', segAt(t).cap ? segAt(t).cap.slice(0, 1) : '片头', segAt(t).c],
+      ['长度', t < 14 ? '2k → 4k' : '2k → 16k'],
+      ['相对计算量', t < 14 ? '1× → 4×' : '1× → 64×', t < 14 ? C.think : C.err]
+    ]);
+  }
+
+  // ===== render one frame (pure: the output depends only on the frame number) =====
+  function renderFrame(frame) {
+    frame = Math.max(0, Math.min(TOTAL_FRAMES - 1, frame | 0));
+    const t = frame / FPS / SCALE, seg = segAt(t);              // t: animation timeline in seconds
+    ctx.clearRect(0, 0, W, H);
+    background(t);
+    withA(prog(t, 2.2, 2.9), () => { header(t, seg); scene(t, seg); });
+    intro(t);
+    progress(frame, t);
+  }
+
+  // ===== background music: pure synthesis (deterministic, no audio assets) =====
+  // Am - F - C - G progression at 84 BPM: soft pad + plucked bass + arpeggio + echo
+  function synthMusic(sr, seconds) {
+    const n = Math.ceil(sr * seconds), out = new Float32Array(n);
+    const beat = 60 / 84, bar = beat * 4, eighth = beat / 2;
+    const CH = [[57, 60, 64], [57, 60, 65], [55, 60, 64], [55, 59, 62]], BASS = [45, 41, 48, 43];
+    const ARP = [0, 1, 2, 3, 2, 1, 0, 1];
+    const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+    const s = (f, t) => Math.sin(TAU * f * t);
+    const pad = (ch, t) => ch.reduce((a, m) => { const f = hz(m); return a + s(f, t) + 0.6 * s(f * 1.004, t) + 0.25 * s(f * 2, t); }, 0);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, b = Math.floor(t / bar), tb = t - b * bar, ci = b % 4;
+      let v = 0.022 * pad(CH[ci], t) * Math.min(1, tb / 0.5);                          // pad fade-in
+      if (b > 0 && tb < 0.5) v += 0.022 * pad(CH[(b - 1) % 4], t) * (1 - tb / 0.5);      // previous chord fades out (no click)
+      for (const k of [0, 2]) {                                                         // bass on beats 1 and 3
+        const dt = tb - k * beat;
+        if (dt >= 0) { const f = hz(BASS[ci]); v += 0.11 * Math.exp(-dt * 3) * Math.min(1, dt / 0.01) * (s(f, t) + 0.2 * s(2 * f, t)); }
+      }
+      if (t > bar) {                                                                    // arpeggio from bar 2 on
+        const e = Math.floor(tb / eighth);
+        for (const back of [0, 1]) {
+          const idx = e - back; if (idx < 0) continue;
+          const dt = tb - idx * eighth, ch = CH[ci], p = ARP[idx % 8];
+          const f = hz((p === 3 ? ch[0] + 12 : ch[p]) + 12);
+          v += 0.04 * Math.exp(-dt * 5) * Math.min(1, dt / 0.005) * (s(f, t) + 0.15 * s(3 * f, t));
+        }
+      }
+      out[i] = v;
+    }
+    const d = Math.round(beat * 0.75 * sr);                                             // echo
+    for (let i = d; i < n; i++) out[i] += 0.28 * out[i - d];
+    let y = 0, peak = 1e-6;                                                             // one-pole low-pass + peak
+    for (let i = 0; i < n; i++) { y += 0.35 * (out[i] - y); out[i] = y; peak = Math.max(peak, Math.abs(y)); }
+    for (let i = 0; i < n; i++) {                                                       // normalize + fade in/out
+      const t = i / sr;
+      out[i] = out[i] / peak * 0.85 * Math.min(1, t / 2.5) * Math.min(1, (seconds - t) / 3);
+    }
+    return out;
+  }
+  function musicWavBase64(sr = 44100) {
+    const data = synthMusic(sr, REAL), n = data.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, data[i])) * 32767, true);
+    const bytes = new Uint8Array(buf); let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  // ===== narration: map the animation timeline onto real time with SCALE =====
+  const narration = () => NARRATION.map(([s, txt]) => ({ start: +(s * SCALE + LEAD).toFixed(2), text: txt }));
+
+  // ===== live preview (driven by the audio clock so sound and picture stay in sync; browsers require a click) =====
+  let audio = null, rafId = null, timers = [], startAt = 0, lastFrame = -1;
+  function narrationLang() {                           // pick the preview voice from the narration language
+    const t = NARRATION.map(([, s]) => s).join(' ');
+    const cjk = (t.match(/[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/g) || []).length;
+    return cjk > (t.match(/[A-Za-z]/g) || []).length ? 'zh-CN' : 'en-US';
+  }
+  function pickVoice() {
+    const short = narrationLang().split('-')[0];
+    const vs = speechSynthesis.getVoices().filter(v => (v.lang || '').replace('_', '-').toLowerCase().startsWith(short));
+    return vs.find(v => /Natural|Online|Neural/i.test(v.name)) || vs[0] || null;
+  }
+  function say(txt) {
+    const u = new SpeechSynthesisUtterance(txt), v = pickVoice();
+    u.lang = narrationLang(); u.rate = 1.05; if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  }
+  function stop() {
+    if (rafId) cancelAnimationFrame(rafId); rafId = null;
+    timers.forEach(clearTimeout); timers = [];
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (audio && audio.src) { try { audio.src.stop(); } catch (e) { /* already stopped */ } audio.src = null; }
+  }
+  function tick() {
+    const elapsed = audio.ctx.currentTime - startAt;
+    const f = Math.min(TOTAL_FRAMES - 1, Math.floor(elapsed * FPS));
+    if (f !== lastFrame) { renderFrame(f); lastFrame = f; }
+    rafId = elapsed < REAL ? requestAnimationFrame(tick) : null;
+  }
+  function play() {
+    stop();
+    if (!audio) {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const data = synthMusic(ac.sampleRate, REAL), buffer = ac.createBuffer(1, data.length, ac.sampleRate);
+      buffer.copyToChannel(data, 0);
+      const gain = ac.createGain(); gain.gain.value = 0.22; gain.connect(ac.destination);
+      audio = { ctx: ac, buffer, gain, src: null };
+    }
+    audio.ctx.resume();
+    const src = audio.ctx.createBufferSource(); src.buffer = audio.buffer; src.connect(audio.gain);
+    startAt = audio.ctx.currentTime + 0.05; src.start(startAt); audio.src = src;
+    if ('speechSynthesis' in window) narration().forEach(n => timers.push(setTimeout(() => say(n.text), (n.start + 0.05) * 1000)));
+    lastFrame = -1; rafId = requestAnimationFrame(tick);
+  }
+  function startOverlay() {
+    renderFrame(0);
+    ctx.fillStyle = 'rgba(3, 5, 12, 0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.shadowColor = C.obs; ctx.shadowBlur = 30; ctx.fillStyle = C.obs;
+    ctx.beginPath(); ctx.moveTo(W / 2 - 26, H / 2 - 40); ctx.lineTo(W / 2 + 40, H / 2); ctx.lineTo(W / 2 - 26, H / 2 + 40); ctx.closePath(); ctx.fill(); ctx.restore();
+    text('Click to play (music + narration)', W / 2, H / 2 + 90, C.text, `bold 22px ${SANS}`, 'center', 'middle');
+    text(`${REAL.toFixed(0)}s · click again to replay`, W / 2, H / 2 + 126, C.dim, `15px ${SANS}`, 'center', 'middle');
+  }
+
+  // ===== export interface (used by make-video.js / check.js) =====
+  window.renderFrame = renderFrame;
+  window.TOTAL_FRAMES = TOTAL_FRAMES;
+  window.VIDEO_META = {
+    fps: FPS, width: W, height: H, scale: SCALE, duration: REAL, frames: TOTAL_FRAMES,
+    narration: narration(), narrationLead: LEAD,
+    segs: SEG.map(s => ({ s: s.s, e: s.e, cap: s.cap || '' }))
+  };
+  window.musicWavBase64 = musicWavBase64;
+  if (new URLSearchParams(location.search).has('capture')) { document.body.classList.add('capture'); renderFrame(0); }
+  else {
+    if ('speechSynthesis' in window) speechSynthesis.getVoices();   // preload the voice list
+    canvas.addEventListener('click', play);
+    startOverlay();
+  }
+})();
+</script>
+</body>
+</html>
