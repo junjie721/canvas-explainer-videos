@@ -12,9 +12,17 @@ const USAGE = 'usage: node check.js <page.html> [--preview 0.2,0.5,0.8]';
 if (!file) { console.log(USAGE); process.exit(1); }
 const pf = argv.indexOf('--preview'), pv = pf >= 0 ? argv[pf + 1] : '';
 if (!fs.existsSync(path.resolve(file))) { console.log(`file not found: ${path.resolve(file)}`); process.exit(1); }
-const marks = (pv && !pv.startsWith('--') ? pv : '0.15,0.4,0.65,0.9')
-  .split(',').map(Number).filter(n => Number.isFinite(n) && n >= 0 && n <= 1);
-if (!marks.length) marks.push(0.5);
+const userMarks = (pv && !pv.startsWith('--') ? pv : '')
+  .split(',').filter(s => s.trim() !== '')          // Number('') is 0, which would look like a real mark
+  .map(Number).filter(n => Number.isFinite(n) && n >= 0 && n <= 1);
+const wantSheet = argv.includes('--sheet');          // also write a storyboard contact sheet
+// Default previews: one frame per segment, taken at the segment's midpoint — elements usually fade in
+// shortly after a segment starts, so an early frame can still show the previous segment's content. A fixed
+// set of fractions (0.15/0.4/…) can silently skip a whole segment, which is how a mismatch slips through.
+const marksFor = meta => userMarks.length ? userMarks
+  : (meta.segs && meta.segs.length
+    ? [0.04, ...meta.segs.slice(1).map(s => Math.min(0.99, (s.s + (s.e - s.s) * 0.5) * (meta.scale || 1) / meta.duration))]
+    : [0.15, 0.4, 0.65, 0.9]);
 
 // Rough speaking-rate model, used only to warn before the real TTS runs.
 // CJK ~4.6 characters/second, English ~2.6 words/second (with edge-tts at +5%).
@@ -53,12 +61,50 @@ function estimateSeconds(text) {
   });
 
   const dir = path.join(path.dirname(path.resolve(file)), 'preview'); fs.mkdirSync(dir, { recursive: true });
+  const marks = marksFor(r.meta);
   for (const k of marks) {
     const f = Math.min(r.meta.frames - 1, Math.floor(r.meta.frames * k));
     const u = await p.evaluate(n => { window.renderFrame(n); return document.querySelector('canvas').toDataURL('image/png'); }, f);
     fs.writeFileSync(path.join(dir, `${path.basename(file, '.html')}_${f}.png`), Buffer.from(u.split(',')[1], 'base64'));
   }
   console.log(`previews → ${dir}`);
+
+  // Storyboard: every segment's frame + its caption + its narration line, so the whole arc (and whether
+  // the picture matches the words) can be reviewed in one image. Drawn in the page, so no ffmpeg needed.
+  if (wantSheet && r.meta.segs && r.meta.segs.length) {
+    const sheet = await p.evaluate(m => {
+      const src = document.querySelector('canvas');
+      const cols = 2, cw = 620, ch = 349, pad = 16, head = 84, capH = 66;
+      const rows = Math.ceil(m.segs.length / cols);
+      const c = document.createElement('canvas');
+      c.width = cols * cw + (cols + 1) * pad;
+      c.height = head + rows * (ch + capH) + pad;
+      const g = c.getContext('2d');
+      g.fillStyle = '#05070f'; g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#dbe7ff'; g.font = 'bold 30px "Segoe UI", Arial, sans-serif';
+      g.fillText('Storyboard', pad, 46);
+      g.fillStyle = 'rgba(170,190,230,0.65)'; g.font = '16px "Segoe UI", Arial, sans-serif';
+      g.fillText(`${m.segs.length} segments · ${m.duration}s · one frame per segment`, pad + 200, 46);
+      m.segs.forEach((s, i) => {
+        const f = Math.min(m.frames - 1, Math.round((s.s + (s.e - s.s) * 0.5) * m.scale * m.fps));   // mid-segment
+        window.renderFrame(f);
+        const x = pad + (i % cols) * (cw + pad), y = head + Math.floor(i / cols) * (ch + capH);
+        g.drawImage(src, x, y, cw, ch);
+        g.strokeStyle = 'rgba(120,150,220,0.35)'; g.lineWidth = 1;
+        g.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+        const line = (m.narration || []).find(n => Math.abs(n.start - (s.s * m.scale + m.lead)) < 0.02);
+        g.fillStyle = s.c || '#dbe7ff'; g.font = 'bold 17px "Segoe UI", Arial, sans-serif';
+        g.fillText(`${i === 0 ? 'intro' : 'SEG ' + i}: ${s.cap || '(no caption)'}`, x + 6, y + ch + 26);
+        g.fillStyle = 'rgba(170,190,230,0.75)'; g.font = '15px "Segoe UI", Arial, sans-serif';
+        const txt = line ? line.text : '(no narration in this segment)';
+        g.fillText(txt.length > 58 ? txt.slice(0, 58) + '…' : txt, x + 6, y + ch + 50);
+      });
+      return c.toDataURL('image/png');
+    }, { segs: r.meta.segs, scale: r.meta.scale || 1, fps: r.meta.fps, frames: r.meta.frames, duration: r.meta.duration, narration: r.meta.narration || [], lead: r.meta.narrationLead === undefined ? 0.3 : r.meta.narrationLead });
+    const sheetPath = path.join(dir, `${path.basename(file, '.html')}_sheet.png`);
+    fs.writeFileSync(sheetPath, Buffer.from(sheet.split(',')[1], 'base64'));
+    console.log(`storyboard → ${sheetPath}`);
+  }
   await b.close();
   process.exit(errs.length || bad ? 1 : 0);
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });

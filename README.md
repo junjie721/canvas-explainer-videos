@@ -111,6 +111,8 @@ The skill only depends on the shared skill format (`SKILL.md` with YAML frontmat
 
 **`check.js <page.html>`** — renders every frame, validates the timeline, estimates whether each narration line fits, and writes preview PNGs to `preview/`. A non-zero exit code means something is wrong (runtime error / narration too long / timeline gap / narration outside its segment) — fix it before exporting.
 
+By default it writes **one preview per segment**; `--sheet` additionally writes a **storyboard contact sheet** (each segment's frame + its caption + its narration line) — the fastest way to review the whole arc and spot a segment where the picture does not match the words.
+
 **`make-video.js <page.html>`** — exports the MP4.
 
 | Flag | Meaning |
@@ -133,6 +135,16 @@ The skill only depends on the shared skill format (`SKILL.md` with YAML frontmat
 3. `renderFrame(n)` maps a frame number to a picture, so frames can be exported with `canvas.toDataURL` across several parallel pages (~10× faster than element screenshots).
 4. The background music is synthesized with maths in the Web Audio graph; the narration comes from edge-tts; ffmpeg aligns, mixes and encodes.
 5. Narration start times are mapped onto real time with `SCALE`, and `check.js` verifies every line lands inside the segment it describes.
+
+### Content design comes first
+
+The scripts check mechanics; they cannot tell whether a video teaches anything. `SKILL.md` therefore opens
+with a content layer: write the **learning objective**, follow a **beat sheet** (hook → tension →
+mechanism → boundary → payoff), keep **one claim per segment**, and pick a **visual grammar** from
+[references/visual-grammars.md](making-canvas-explainer-videos/references/visual-grammars.md)
+(pipeline, A/B comparison, scale, state machine, hierarchy, progressive build) instead of defaulting to
+another flow chart. Anything concrete on screen must come from a real tool run — `examples/token-explained/`
+is the pattern, with the raw tokenizer output committed next to the video.
 
 ## FAQ
 
@@ -158,6 +170,7 @@ The skill only depends on the shared skill format (`SKILL.md` with YAML frontmat
 |   |-- SKILL.md                        # entry point the agent loads
 |   |-- template.html                   # the single-file template you edit
 |   |-- agents/openai.yaml              # Codex UI metadata
+|   |-- references/visual-grammars.md   # six scene archetypes to copy instead of reinventing a layout
 |   `-- scripts/
 |       |-- doctor.js                   # dependency check
 |       |-- check.js                    # full-frame self-check + previews
@@ -213,5 +226,7 @@ node .../scripts/make-video.js page.html   # 导出 page.mp4
 常用参数：`--voice zh-CN-YunxiNeural`（男声）、`--rate +0%`（语速）、`--reuse`（复用已导出的帧，只重做音频）、`--format png`（无损帧）。默认音色会跟着解说的语种走：中文解说自动用 `zh-CN-XiaoxiaoNeural`，英文解说自动用 `en-US-AriaNeural`。
 
 **常见问题**：装不上 ffmpeg 时 `doctor.js` 会搜 PATH / WinGet / Chocolatey / Scoop 和常见目录，还不行可以用 npm 上的二进制包兜底（README 上面有 PowerShell 命令）；解说太长会被 `check.js` 标红，缩短文案或拉长对应的 `SEG`；沙箱里 edge-tts 连不上网会明确报错，加 `--reuse` 可复用已导出的帧。
+
+**内容质量**：`SKILL.md` 现在有一层「先设计内容」的要求——先写学习目标，按节拍表（钩子 → 矛盾 → 机制 → 边界 → 结论）排段落，一段只讲一个论点，并从 `references/visual-grammars.md` 里挑一个视觉骨架（流水线／左右对照／规模／状态机／层级／逐层构建）。片子里任何具体数字都必须来自真实工具输出，`examples/token-explained/` 就是范例；`check.js --sheet` 会额外生成一张故事板联络表，一眼看完整片节奏与音画对应。
 
 更多细节见英文部分（含原理、参数表、目录结构、测试与 CI 说明）。

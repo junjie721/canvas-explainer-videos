@@ -15,10 +15,54 @@ A single self-contained HTML file draws every frame on a Canvas, Web Audio synth
 - Use for: concept explainers (15–90s), process or architecture animations, math visualizations, narrated teaching clips, "no assets at all" animations
 - Don't use for: live-action footage, real photo/video assets, long-form video editing (use a video editor)
 
+## Design the content before the picture
+
+The scripts validate mechanics; nothing validates whether the video actually teaches. Spend five minutes
+here first — it is the difference between a nice animation and a lesson.
+
+**1. Write the learning objective.** One sentence: "After these seconds the viewer can answer: ___".
+Every segment serves that sentence; if a segment doesn't, cut it rather than filling time.
+
+**2. Follow a beat sheet.** An explainer that teaches usually has these beats — scale the seconds to your
+total length.
+
+| Beat | 30s | 60s | What it does |
+|---|---|---|---|
+| Hook: a counter-intuitive fact or question | 0–4 | 0–8 | buys attention; make it concrete and numerical |
+| Tension: why the naive answer fails | 4–9 | 8–16 | creates the need for the explanation |
+| Mechanism: how it actually works | 9–20 | 16–38 | the "why", not just the "what" — this is the learning |
+| Boundary: where the rule breaks | 20–25 | 38–48 | stops the audience from over-generalising |
+| Payoff: what to do with it | 25–30 | 48–60 | makes it useful; end on a rule of thumb, not a slogan |
+
+**3. One claim per segment.** Write the sentence first, then design a picture that *proves* it. If a
+segment needs two sentences, it is two segments. `check.js` cannot see this — it is on you.
+
+**4. Pick a visual grammar** from [references/visual-grammars.md](references/visual-grammars.md) before
+writing `scene(t)`. Reusing the pipeline shape for every topic is the most common way these videos end up
+looking alike, and a countable comparison usually teaches more than another flow chart.
+
+**5. Write narration for the ear.** One idea per line; spoken register; concrete numbers instead of
+adjectives ("3 tokens fewer", not "more efficient"); spell numbers the way you want them read ("20 万",
+not "200000"); a comfortable pace is ~3.5–4 CJK characters/s (4.6 is the ceiling) or ~2–2.4 English
+words/s (2.6 is the ceiling) — writing at the ceiling sounds rushed; drop filler like "我们可以看到".
+
+**6. Ground every fact.** Anything concrete on screen — a number, an ID, a version, a price — comes from a
+real tool run, or is labelled as illustrative:
+
+| Claim type | Where the real number comes from |
+|---|---|
+| token counts or split points | `pip install tiktoken`, encode the exact string (see `examples/token-explained/`) |
+| API latency, status codes | `curl -w` against the real endpoint |
+| library or tool versions | the tool's own `--version` output |
+| memory, cost, limits | run the measurement, or cite the vendor's documented figure |
+
+When an example ships in this repo it should include the raw tool output next to it, so a reader can
+reproduce the claim (`examples/token-explained/tokenization.json` is the pattern).
+
 ## Workflow
 0. `node <skill>/scripts/doctor.js` — dependency check. It prints what is missing and how to install it (`--browser` also verifies that a browser can actually launch). Run it first, otherwise you only find out at export time.
-1. Copy `template.html` into the target directory and edit **only the CONTENT section**: `TITLE / INTRO / SEG / NARRATION / scene(t)`. The template ships with a runnable example (the journey of an HTTP request) — get that running before rewriting it.
-2. `node <skill>/scripts/check.js page.html` — renders every frame to catch runtime errors, validates the timeline (SEG continuity + narration/segment alignment), estimates whether each narration line fits its time window, and writes preview images to `preview/`. **A non-zero exit code means something is wrong — fix it until every line is ✓**, and look at the previews for overlapping layout. Note what this check does *not* cover: it never verifies **facts or narration/picture alignment**. Any concrete number, ID, version, price or statistic shown on screen must come from a real tool run (or be labelled as illustrative), and you should re-read each SEG's narration against what its scene actually draws.
+1. Design first — learning objective, beat sheet, one claim per segment, chosen grammar (see above) — then copy `template.html` into the target directory and edit **only the CONTENT section**: `TITLE / INTRO / SEG / NARRATION / scene(t)`. The template ships with a runnable example (the journey of an HTTP request) — get that running before rewriting it.
+2. `node <skill>/scripts/check.js page.html` — renders every frame to catch runtime errors, validates the timeline (SEG continuity + narration/segment alignment), estimates whether each narration line fits its time window, and writes preview images to `preview/`. By default it now writes **one preview per segment**; add `--sheet` to also get a storyboard contact sheet (every segment's frame + its caption + its narration line) that makes the whole arc reviewable at a glance. **A non-zero exit code means something is wrong — fix it until every line is ✓**, and look at the previews for overlapping layout. Note what this check does *not* cover: it never verifies **facts or narration/picture alignment**. Any concrete number, ID, version, price or statistic shown on screen must come from a real tool run (or be labelled as illustrative), and you should re-read each SEG's narration against what its scene actually draws.
 3. `node <skill>/scripts/make-video.js page.html` — writes `page.mp4` (`--help` lists the options: `--voice` to change the voice, `--reuse` to keep the frames and redo only the audio, `--format png`, `--quality`).
 4. Verify duration and audio tracks with ffprobe, then give the user the **absolute path** of the result.
 

@@ -41,6 +41,13 @@ for (const f of new Set(mentioned)) {
 }
 check(mentioned.length > 0, 'SKILL.md references at least one script');
 
+// --- every reference linked from SKILL.md must really exist ---
+const refs = [...md.matchAll(/references\/([A-Za-z0-9_.-]+\.md)/g)].map(m => m[1]);
+for (const f of new Set(refs)) {
+  check(fs.existsSync(path.join(skillDir, 'references', f)), `references/${f} linked from SKILL.md exists`);
+}
+check(refs.length > 0, 'SKILL.md links at least one reference');
+
 // --- agents/openai.yaml ---
 const yaml = read(path.join(skillDir, 'agents', 'openai.yaml'));
 for (const key of ['display_name', 'short_description', 'default_prompt']) {

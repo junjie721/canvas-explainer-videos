@@ -26,6 +26,10 @@ node making-canvas-explainer-videos/scripts/make-video.js my-video/page.html
 
 - The picture is a **pure function of the frame number**: no `Math.random()` / `Date.now()` inside
   `renderFrame(n)`; every live value is derived from `t`.
+- Design the content before the picture: write the learning objective, follow the beat sheet in
+  `SKILL.md`, keep one claim per segment, and pick a visual grammar from
+  `making-canvas-explainer-videos/references/visual-grammars.md` (reusing the pipeline shape for every
+  topic is the usual reason these videos look alike).
 - The `SEG` entries must tile `0 ~ DURATION` without gaps, and every `NARRATION` line must start inside the
   segment it describes (`check.js` verifies both and fails the run otherwise).
 - `window.VIDEO_META` (`fps/width/height/scale/duration/frames/narrationLead/narration/segs`) and

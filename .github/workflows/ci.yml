@@ -43,8 +43,8 @@ jobs:
         run: |
           npm i -g playwright
           npx playwright install --with-deps chromium
-      - name: Render every frame of the example and write previews
-        run: node making-canvas-explainer-videos/scripts/check.js examples/${{ matrix.example }}/page.html --preview 0.25,0.75
+      - name: Render every frame of the example, one preview per segment plus a storyboard
+        run: node making-canvas-explainer-videos/scripts/check.js examples/${{ matrix.example }}/page.html --sheet
       - uses: actions/upload-artifact@v4
         if: always()
         with:
