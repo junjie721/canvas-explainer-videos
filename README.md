@@ -7,7 +7,7 @@
 
 ![Demo: the TCP three-way handshake](docs/demo.gif)
 
-> The clip above is a 40-second export ([examples/tcp-handshake/tcp-handshake.mp4](examples/tcp-handshake/tcp-handshake.mp4), source in [examples/tcp-handshake/page.html](examples/tcp-handshake/page.html)). The bundled example is narrated in Chinese; the template's built-in example and the default voice follow the language of your narration text.
+> The clip above is a 40-second export ([examples/tcp-handshake](examples/tcp-handshake)). A second worked example, [examples/token-explained](examples/token-explained), is a 60-second explainer whose token IDs come from a real `tiktoken` run — the raw output is committed next to it. Both bundled examples are narrated in Chinese; the template's built-in example and the default voice follow the language of your narration text.
 
 ## What it does
 
@@ -164,6 +164,7 @@ The skill only depends on the shared skill format (`SKILL.md` with YAML frontmat
 |       |-- make-video.js               # export to MP4
 |       `-- lib.js                      # browser/ffmpeg/python discovery + timeline validation
 |-- examples/tcp-handshake/             # a complete worked example (40s export included)
+|-- examples/token-explained/           # 60s example whose on-screen numbers come from a real tokenizer
 |-- docs/demo.gif                       # the animation at the top of this README
 |-- docs/social-preview.png             # 1280x640 card to upload as the repository social preview
 |-- install.mjs                         # one-command install for several agents

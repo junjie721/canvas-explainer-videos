@@ -28,8 +28,12 @@ jobs:
         run: node tests/install-script.js
 
   render:
-    name: Real browser render of the example
+    name: Real browser render (${{ matrix.example }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [tcp-handshake, token-explained]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,10 +44,10 @@ jobs:
           npm i -g playwright
           npx playwright install --with-deps chromium
       - name: Render every frame of the example and write previews
-        run: node making-canvas-explainer-videos/scripts/check.js examples/tcp-handshake/page.html --preview 0.25,0.75
+        run: node making-canvas-explainer-videos/scripts/check.js examples/${{ matrix.example }}/page.html --preview 0.25,0.75
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: previews
-          path: examples/tcp-handshake/preview
+          name: previews-${{ matrix.example }}
+          path: examples/${{ matrix.example }}/preview
           if-no-files-found: warn
